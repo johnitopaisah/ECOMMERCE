@@ -16,7 +16,7 @@ urlpatterns = [
         auth_views.LoginView.as_view(template_name="account/login.html", form_class=UserLoginForm),
         name="login",
     ),
-    path("logout/", auth_views.LogoutView.as_view(next_page="/account/login/"), name="logout"),
+    path("logout/", auth_views.LogoutView.as_view(next_page="/"), name="logout"),
     path("register/", views.account_register, name="register"),
     path("activate/<slug:uidb64>/<slug:token>)/", views.account_activate, name="activate"),
     # Reset password
@@ -67,4 +67,5 @@ urlpatterns = [
     # Wish List
     path("wishlist", views.wishlist, name="wishlist"),
     path("wishlist/add_to_wishlist/<int:id>", views.add_to_wishlist, name="user_wishlist"),
+    # path('dashboard/dashboard/', views.profile, name='dashboard'),
 ]

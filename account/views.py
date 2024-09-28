@@ -1,108 +1,175 @@
-import os
-from pathlib import Path
+from django.contrib import messages
+from django.contrib.auth import login, logout
+from django.contrib.auth.decorators import login_required
+from django.contrib.sites.shortcuts import get_current_site
+from django.http import HttpResponse, HttpResponseRedirect
+from django.shortcuts import get_object_or_404, redirect, render
+from django.template.loader import render_to_string
+from django.urls import reverse
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+from orders.models import Order
+from orders.views import user_orders
+from store.models import Product
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+from .forms import RegistrationForm, UserAddressForm, UserEditForm
+from .models import Address, Customer
+from .tokens import account_activation_token
 
-SECRET_KEY = "3xk*)i0x#k$btl=(6q)te!19=mp6d)lm1+zl#ts4ewxi3-!vm_"
 
-DEBUG = True
+def profile(request):
+    return render(request, '/account/dashboard/dashboard.html')
 
-ALLOWED_HOSTS = ["yourdomain.com", "127.0.0.1", "localhost"]
+@login_required
+def wishlist(request):
+    products = Product.objects.filter(users_wishlist=request.user)
+    return render(request, "account/dashboard/user_wish_list.html", {"wishlist": products})
 
-INSTALLED_APPS = [
-    "django.contrib.admin",
-    "django.contrib.auth",
-    "django.contrib.contenttypes",
-    "django.contrib.sessions",
-    "django.contrib.messages",
-    "django.contrib.staticfiles",
-    "store",
-    "basket",
-    "account",
-    "orders",
-    "mptt",
-    "core",
-    "checkout",
-]
 
-MIDDLEWARE = [
-    "django.middleware.security.SecurityMiddleware",
-    "django.contrib.sessions.middleware.SessionMiddleware",
-    "django.middleware.common.CommonMiddleware",
-    "django.middleware.csrf.CsrfViewMiddleware",
-    "django.contrib.auth.middleware.AuthenticationMiddleware",
-    "django.contrib.messages.middleware.MessageMiddleware",
-    "django.middleware.clickjacking.XFrameOptionsMiddleware",
-]
+@login_required
+def add_to_wishlist(request, id):
+    product = get_object_or_404(Product, id=id)
+    if product.users_wishlist.filter(id=request.user.id).exists():
+        product.users_wishlist.remove(request.user)
+        messages.success(request, product.title + " has been removed from your WishList")
+    else:
+        product.users_wishlist.add(request.user)
+        messages.success(request, "Added " + product.title + " to your WishList")
+    return HttpResponseRedirect(request.META["HTTP_REFERER"])
 
-ROOT_URLCONF = "core.urls"
 
-TEMPLATES = [
-    {
-        "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [BASE_DIR / "templates"],
-        "APP_DIRS": True,
-        "OPTIONS": {
-            "context_processors": [
-                "django.template.context_processors.debug",
-                "django.template.context_processors.request",
-                "django.contrib.auth.context_processors.auth",
-                "django.contrib.messages.context_processors.messages",
-                "store.context_processors.categories",
-                "basket.context_processors.basket",
-            ],
-        },
-    },
-]
+@login_required
+def dashboard(request):
+    orders = user_orders(request)
+    return render(request, "account/dashboard/dashboard.html", {"section": "profile", "orders": orders})
 
-WSGI_APPLICATION = "core.wsgi.application"
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
-}
+@login_required
+def edit_details(request):
+    if request.method == "POST":
+        user_form = UserEditForm(instance=request.user, data=request.POST)
 
-AUTH_PASSWORD_VALIDATORS = [
-    {
-        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
-    },
-]
+        if user_form.is_valid():
+            user_form.save()
+    else:
+        user_form = UserEditForm(instance=request.user)
 
-LANGUAGE_CODE = "en-us"
+    return render(request, "account/dashboard/edit_details.html", {"user_form": user_form})
 
-TIME_ZONE = "UTC"
 
-USE_I18N = True
+@login_required
+def delete_user(request):
+    user = Customer.objects.get(user_name=request.user)
+    user.is_active = False
+    user.save()
+    logout(request)
+    return redirect("account:delete_confirmation")
 
-USE_L10N = True
 
-USE_TZ = True
+def account_register(request):
 
-STATIC_URL = "/static/"
+    if request.user.is_authenticated:
+        return redirect("account:dashboard")
 
-STATICFILES_DIRS = [os.path.join(BASE_DIR, "static")]
+    if request.method == "POST":
+        registerForm = RegistrationForm(request.POST)
+        if registerForm.is_valid():
+            user = registerForm.save(commit=False)
+            user.email = registerForm.cleaned_data["email"]
+            user.set_password(registerForm.cleaned_data["password"])
+            user.is_active = False
+            user.save()
+            current_site = get_current_site(request)
+            subject = "Activate your Account"
+            message = render_to_string(
+                "account/registration/account_activation_email.html",
+                {
+                    "user": user,
+                    "domain": current_site.domain,
+                    "uid": urlsafe_base64_encode(force_bytes(user.pk)),
+                    "token": account_activation_token.make_token(user),
+                },
+            )
+            user.email_user(subject=subject, message=message)
+            return render(request, "account/registration/register_email_confirm.html", {"form": registerForm})
+    else:
+        registerForm = RegistrationForm()
+    return render(request, "account/registration/register.html", {"form": registerForm})
 
-MEDIA_URL = "/media/"
-MEDIA_ROOT = os.path.join(BASE_DIR, "media/")
 
-# Basket session ID
-BASKET_SESSION_ID = "basket"
+def account_activate(request, uidb64, token):
+    try:
+        uid = force_str(urlsafe_base64_decode(uidb64))
+        user = Customer.objects.get(pk=uid)
+    except (TypeError, ValueError, OverflowError, user.DoesNotExist):
+        user = None
+    if user is not None and account_activation_token.check_token(user, token):
+        user.is_active = True
+        user.save()
+        login(request, user)
+        return redirect("account:dashboard")
+    else:
+        return render(request, "account/registration/activation_invalid.html")
 
-# Custom user model
-AUTH_USER_MODEL = "account.Customer"
-LOGIN_REDIRECT_URL = "/account/dashboard"
-LOGIN_URL = "/account/login/"
 
-# Email setting
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+# Addresses
+
+
+@login_required
+def view_address(request):
+    addresses = Address.objects.filter(customer=request.user)
+    return render(request, "account/dashboard/addresses.html", {"addresses": addresses})
+
+
+@login_required
+def add_address(request):
+    if request.method == "POST":
+        address_form = UserAddressForm(data=request.POST)
+        if address_form.is_valid():
+            address_form = address_form.save(commit=False)
+            address_form.customer = request.user
+            address_form.save()
+            return HttpResponseRedirect(reverse("account:addresses"))
+    else:
+        address_form = UserAddressForm()
+    return render(request, "account/dashboard/edit_addresses.html", {"form": address_form})
+
+
+@login_required
+def edit_address(request, id):
+    if request.method == "POST":
+        address = Address.objects.get(pk=id, customer=request.user)
+        address_form = UserAddressForm(instance=address, data=request.POST)
+        if address_form.is_valid():
+            address_form.save()
+            return HttpResponseRedirect(reverse("account:addresses"))
+    else:
+        address = Address.objects.get(pk=id, customer=request.user)
+        address_form = UserAddressForm(instance=address)
+    return render(request, "account/dashboard/edit_addresses.html", {"form": address_form})
+
+
+@login_required
+def delete_address(request, id):
+    address = Address.objects.filter(pk=id, customer=request.user).delete()
+    return redirect("account:addresses")
+
+
+@login_required
+def set_default(request, id):
+    Address.objects.filter(customer=request.user, default=True).update(default=False)
+    Address.objects.filter(pk=id, customer=request.user).update(default=True)
+
+    previous_url = request.META.get("HTTP_REFERER")
+
+    if "delivery_address" in previous_url:
+        return redirect("checkout:delivery_address")
+
+    return redirect("account:addresses")
+
+
+@login_required
+def user_orders(request):
+    user_id = request.user.id
+    orders = Order.objects.filter(user_id=user_id).filter(billing_status=True)
+    return render(request, "account/dashboard/user_orders.html", {"orders": orders})

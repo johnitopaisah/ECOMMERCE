@@ -5,9 +5,12 @@ from store.models import Product
 
 from .basket import Basket
 
+from django.conf import settings
+
 
 def basket_summary(request):
     basket = Basket(request)
+    basket_id = request.session.get(settings.BASKET_SESSION_ID, {})
     return render(request, 'basket/summary.html', {'basket': basket})
 
 

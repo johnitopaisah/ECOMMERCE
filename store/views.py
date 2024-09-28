@@ -2,6 +2,8 @@ from django.shortcuts import get_object_or_404, render
 
 from .models import Category, Product
 
+def homepage_view(request):
+    return render(request, 'store/index.html')
 
 def product_all(request):
     products = Product.objects.prefetch_related("product_image").filter(is_active=True)
